@@ -43,6 +43,9 @@ hallucinate_struct = struct.Struct("i" * 2 + "d" * 5)
 # synthesize_noz: pitch, n_edits
 synthesize_noz_struct = struct.Struct("ii")
 
+# edit_z_struct: z, n_edits
+edit_z_struct = struct.Struct((Z_SIZE*"d")+"i")
+
 IN_TAG_RAND_Z = 0
 IN_TAG_SLERP_Z = 1
 IN_TAG_GEN_AUDIO = 2
@@ -51,6 +54,8 @@ IN_TAG_LOAD_COMPONENTS = 4
 IN_TAG_SET_COMPONENT_AMPLITUDES = 5
 IN_TAG_SYNTHESIZE_NOZ = 6
 IN_TAG_HALLUCINATE_NOZ = 7
+IN_TAG_GET_Z_MEAN = 8
+IN_TAG_EDIT_Z = 9
 
 OUT_TAG_INIT = 0
 OUT_TAG_Z = 1
@@ -154,3 +159,12 @@ def to_synthesize_noz_msg(pitch, num_edits):
 
 def from_synthesize_noz_msg(msg):
     return synthesize_noz_struct.unpack(msg)
+
+def to_edit_z_msg(z, num_edits):
+    return edit_z_struct.pack(*z, num_edits)
+
+def from_edit_z_msg(msg):
+    data = edit_z_struct.unpack(msg)
+    z = np.array(data[:Z_SIZE])
+    num_edits = data[Z_SIZE]
+    return z, num_edits

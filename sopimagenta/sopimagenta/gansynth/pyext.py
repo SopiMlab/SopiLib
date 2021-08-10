@@ -35,8 +35,8 @@ class gansynth(pyext._class):
         ckpt_dir = os.path.join(self._canvas_dir, str(ckpt_dir))
         worker_cmd = (python, gen_script, ckpt_dir, str(batch_size))
 
-        print("starting gansynth_worker process, this may take a while", file=sys.stderr)
-        print(f"worker_cmd = {worker_cmd}")
+        print_err("starting gansynth_worker process, this may take a while")
+        print_err(f"worker_cmd = {worker_cmd}")
 
         self._proc = subprocess.Popen(
             worker_cmd,
@@ -95,7 +95,7 @@ class gansynth(pyext._class):
         if tag != expected_tag:
             raise ValueError("expected tag {}, got {}".format(expected_tag, tag))
 
-    def load_ganspace_components_1(self, ganspace_components_file, component_amplitudes_buff_name):
+    def load_ganspace_components_1(self, ganspace_components_file, component_amplitudes_buff_name=None):
         ganspace_components_file = os.path.join(
             self._canvas_dir,
             str(ganspace_components_file)
@@ -112,15 +112,45 @@ class gansynth(pyext._class):
         component_count = protocol.from_count_msg(count_msg)
 
         self.ganspace_components_amplitudes_buffer_name = component_amplitudes_buff_name
-
-        buf = pyext.Buffer(component_amplitudes_buff_name)
-        buf.resize(component_count)
-        buf.dirty()
+        if self.ganspace_components_amplitudes_buffer_name is not None:
+            buf = pyext.Buffer(component_amplitudes_buff_name)
+            buf.resize(component_count)
+            buf.dirty()
 
         print("GANSpace components loaded!", file=sys.stderr)
 
         self._outlet(1, "loaded_pca")
 
+    # def load_ganspace_components_v2_1(self, ganspace_components_file, component_amplitudes_buff, z_buf_name=None):
+    #     ganspace_components_file = os.path.join(
+    #         self._canvas_dir,
+    #         str(ganspace_components_file)
+    #     )
+
+    #     print_err("Loading GANSpace v2 components...")
+
+    #     with open(ganspace_components_file, "rb") as fp:
+    #         pca = pickle.load(fp)
+
+    #     version = pca["version"] if version in pca else 1
+    #     if version < 2:
+    #         raise Exception(f"can't load components - file has version {version}")
+
+    #     comp = pca["z_comp"]
+    #     n_components = comp.shape[0]
+    #     comp = comp.reshape(n_components, -1) # (n_components, 1, 256) -> (n_components, 256)
+    #     mean = pca["z_mean"].reshape(-1) # (1, 256) -> (256,)
+
+    # def get_mean_z_1(self, *buf_names):
+    #     in_count = len(buf_names)
+
+    #     if in_count == 0:
+    #         raise ValueError("no buffer name(s) specified")
+
+        
+        
+    #     for buf_name in buf_names:
+            
     def randomize_z_1(self, *buf_names):
         if not self._proc:
             raise Exception("can't randomize z - no gansynth_worker process is running")
@@ -361,3 +391,80 @@ class gansynth(pyext._class):
         audio_buf.dirty()
         
         self._outlet(1, ["hallucinated", audio_size])
+
+    def z_mean_1(self, buf_name):
+        if not self._proc:
+            raise Exception("can't get z mean - no gansynth_worker process is running")
+
+        self._write_msg(protocol.IN_TAG_GET_Z_MEAN)
+        
+        self._read_tag(protocol.OUT_TAG_Z)
+
+        out_count_msg = self._read(protocol.count_struct.size)
+        out_count = protocol.from_count_msg(out_count_msg)
+
+        if out_count > 0:
+            assert out_count == 1
+
+            z_msg = self._read(protocol.z_struct.size)
+            z = protocol.from_z_msg(z_msg)
+
+            z32 = z.astype(np.float32)
+        
+            buf = pyext.Buffer(buf_name)
+            if len(buf) != len(z32):
+                buf.resize(len(z32))
+            
+            buf[:] = z32
+            buf.dirty()
+            
+            self._outlet(1, ["ok", "z_mean"])
+
+    def edit_z_1(self, src_buf_name, dst_buf_name, *edits):
+        if not self._proc:
+            raise Exception("can't edit z - no gansynth_worker process is running")
+
+        src_buf = pyext.Buffer(src_buf_name)
+        src_z = np.array(src_buf, dtype=np.float64)
+        dst_buf = pyext.Buffer(dst_buf_name)
+
+        raw_edits = edits
+        edits = []
+        for edit in raw_edits:
+            if isinstance(edit, pyext.Symbol):
+                # edit refers to a Pd array
+                edits_buf = pyext.Buffer(edit)
+                for val in edits_buf:
+                    edits.append(val)
+            else:
+                # edit is a number, probably
+                edits.append(edit)
+
+        num_edits = len(edits)
+        
+        self._write_msg(
+            protocol.IN_TAG_EDIT_Z,
+            protocol.to_edit_z_msg(src_z, num_edits),
+            *map(protocol.to_f64_msg, edits)
+        )
+
+        self._read_tag(protocol.OUT_TAG_Z)
+        
+        out_count_msg = self._read(protocol.count_struct.size)
+        out_count = protocol.from_count_msg(out_count_msg)
+
+        if out_count > 0:
+            assert out_count == 1
+
+            z_msg = self._read(protocol.z_struct.size)
+            z = protocol.from_z_msg(z_msg)
+
+            z32 = z.astype(np.float32)
+        
+            if len(dst_buf) != len(z32):
+                dst_buf.resize(len(z32))
+            
+            dst_buf[:] = z32
+            dst_buf.dirty()
+            
+            self._outlet(1, ["ok", "edit_z"])
