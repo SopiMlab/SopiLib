@@ -33,7 +33,7 @@ if len(sys.argv) >= 4:
     sess_config = tf.ConfigProto()
     sess_config.gpu_options.per_process_gpu_memory_fraction = memory_fraction
     
-flags = lib_flags.Flags({"batch_size_schedule": [batch_size]})
+flags = lib_flags.Flags({"batch_size_schedule": [batch_size], "dataset_name": "nsynth_tfrecord"})
 model = lib_model.Model.load_from_path(ckpt_dir, flags, sess_config)
 
 stdin = os.fdopen(sys.stdin.fileno(), "rb", 0)

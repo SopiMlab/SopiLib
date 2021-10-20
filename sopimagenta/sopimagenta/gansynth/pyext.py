@@ -1,8 +1,5 @@
 from __future__ import print_function
 
-print("loading gansynth")
-import sys
-
 try:
     import pyext
 except:
@@ -46,7 +43,7 @@ class gansynth(pyext._class):
         self.sines = [np.array([0.5 * math.sin(i/44100.0*freq*2*math.pi) for i in range(self._out_slot_len())], dtype=np.float32) for freq in sines]
         self.sine_i = 0
         # /DEBUG
-        
+
     def load_1(self, ckpt_dir):
         if self._proc != None:
             self.unload_1()
@@ -145,7 +142,7 @@ class gansynth(pyext._class):
         if tag != expected_tag:
             raise ValueError("expected tag {}, got {}".format(expected_tag, tag))
 
-        # based on http://blog.marmakoide.org/?p=1
+    # based on http://blog.marmakoide.org/?p=1
     def _sphere_spread(self, r, n, center): 
         golden_angle = np.pi * (3 - np.sqrt(5))
         theta = golden_angle * np.arange(n)
@@ -429,8 +426,6 @@ class gansynth(pyext._class):
         out_buf = pyext.Buffer(self.out_buf_name)
         slot_len = self._out_slot_len()
         synthesized_slots = []
-        # DEBUG
-        # /DEBUG
         for i, sound in enumerate(sounds):
             audio_size_msg = self._read(protocol.audio_size_struct.size)
             audio_size = protocol.from_audio_size_msg(audio_size_msg)
