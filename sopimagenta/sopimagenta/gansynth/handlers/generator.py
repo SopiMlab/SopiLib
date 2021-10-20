@@ -181,7 +181,7 @@ def handle_get_z_mean(model, stdin, stdout, state):
         print_err("can't get z mean from PCA result version <2")
     else:
         z = pca["z_mean"].reshape(-1)
-        print_err(z.shape)
+        # print_err(z.shape)
         zs = [z]
         
     stdout.write(protocol.to_tag_msg(protocol.OUT_TAG_Z))
@@ -202,9 +202,9 @@ def handle_edit_z(model, stdin, stdout, state):
         edits.append(protocol.from_f64_msg(edit_msg))
 
     z_comp = pca["z_comp"]
-    print_err(f"z_comp.shape={z_comp.shape}")
+    # print_err(f"z_comp.shape={z_comp.shape}")
     z_comp = z_comp.reshape(-1, protocol.Z_SIZE)
-    print_err(f"z_comp'.shape={z_comp.shape}")
+    # print_err(f"z_comp'.shape={z_comp.shape}")
     num_comp = z_comp.shape[0]
     
     out_zs = []
@@ -213,10 +213,10 @@ def handle_edit_z(model, stdin, stdout, state):
     else:
         edits = edits[:num_comp]
         edits_padded = np.array(edits + [0.0]*(num_comp-len(edits)), dtype=np.float64)
-        print_err(f"edits_padded.shape={edits_padded.shape}")
+        # print_err(f"edits_padded.shape={edits_padded.shape}")
         
         edits_sum = np.sum(z_comp * edits_padded.reshape(-1, 1), axis=0)
-        print_err(f"edits_sum.shape={edits_sum.shape}")
+        # print_err(f"edits_sum.shape={edits_sum.shape}")
         out_z = in_z + edits_sum
         out_zs.append(out_z)
     

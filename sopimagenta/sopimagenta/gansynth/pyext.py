@@ -283,67 +283,74 @@ class gansynth(pyext._class):
     def synthesize_1(self, *args):
         if not self._proc:
             raise Exception("can't synthesize - no gansynth_worker process is running")
+
+        # parse the input
+
+        init_sound = lambda: SimpleNamespace(pitch=None, z=None)
+
+        sounds = []
+        i = 0
+        for arg in args:
+            if i == 0:
+                sounds.append(init_sound())
+                sounds[-1].z = arg
+                i += 1
+            else:
+                sounds[-1].pitch = arg
+                i = 0
+
+        # validate input and build synthesize messages
         
-        arg_count = len(args)
-        
-        if arg_count == 0 or arg_count % 3 != 0:
-            raise ValueError("invalid number of arguments ({}), should be a multiple of 3: synthesize z1 audio1 pitch1 [z2 audio2 pitch2 ...]".format(arg_count))
+        synth_msgs = []
+        for sound in sounds:
+            if None in [sound.z, sound.pitch]:
+                raise ValueError("invalid syntax, should be: synthesize_noz z1 pitch1 [z2 pitch2 ...]")
 
-        if self.ganspace_components_amplitudes_buffer_name:
-            component_buff = pyext.Buffer(self.ganspace_components_amplitudes_buffer_name)
-            components = np.array(component_buff, dtype=np.float64)
-            component_msgs = []
-            for value in components:
-                component_msgs.append(protocol.to_float_msg(value))
-            self._write_msg(protocol.IN_TAG_SET_COMPONENT_AMPLITUDES, *component_msgs)
-
-
-        gen_msgs = []
-        audio_buf_names = []
-        for i in range(0, arg_count, 3):
-            z_buf_name, audio_buf_name, pitch = args[i:i+3]
-
-            z32_buf = pyext.Buffer(z_buf_name)
+            z32_buf = pyext.Buffer(sound.z)
             z = np.array(z32_buf, dtype=np.float64)
             
-            gen_msgs.append(protocol.to_gen_msg(pitch, z))
-            audio_buf_names.append(audio_buf_name)
-            
-        in_count = len(gen_msgs)
-        in_count_msg = protocol.to_count_msg(in_count)
-        self._write_msg(protocol.IN_TAG_GEN_AUDIO, in_count_msg, *gen_msgs)
-                
-        self._read_tag(protocol.OUT_TAG_AUDIO)
+            synth_msgs.append(protocol.to_gen_msg(sound.pitch, z))
 
-        out_count_msg = self._read(protocol.count_struct.size)
-        out_count = protocol.from_count_msg(out_count_msg)
-        
-        if out_count == 0:
+        num_sounds = len(sounds)
+        if num_sounds != self.batch_size:
+            raise ValueError(f"number of sounds ({num_sounds}) does not match batch size ({self.batch_size})") 
+
+        # check that there are enough free slots
+
+        synth_slots = self._free_out_slots(num_sounds)
+        if synth_slots == None:
+            if not self.skipped:
+                print("skipping synthesis: not enough free slots")
+                time.sleep(self.last_synth_dur)
+            self.skipped = True
+            self._outlet(1, "synthesis_skipped")
             return
 
-        assert out_count == in_count
-
-        for audio_buf_name in audio_buf_names:
-            audio_size_msg = self._read(protocol.audio_size_struct.size)
-            audio_size = protocol.from_audio_size_msg(audio_size_msg)
-
-            audio_msg = self._read(audio_size)
-            audio_note = protocol.from_audio_msg(audio_msg)
-
-            audio_buf = pyext.Buffer(audio_buf_name)
-            if len(audio_buf) != len(audio_note):
-                audio_buf.resize(len(audio_note))
-
-            audio_buf[:] = audio_note
-            audio_buf.dirty()
+        self.skipped = False
         
-        self._outlet(1, "synthesized", *audio_buf_names)
+        # write synthesize messages
+        
+        in_count = len(sounds)
+        in_count_msg = protocol.to_count_msg(in_count)
+        self._write_msg(protocol.IN_TAG_GEN_AUDIO, in_count_msg, *synth_msgs)
 
+        # wait for output
+
+        # DEBUG
+        # time.sleep(0.4)
+        # /DEBUG
+
+        self._read_audio_msgs_into_slots(synth_slots)        
+        
+        self._outlet(1, "synthesized")
+
+    # expected format: synthesize_spread edit1 edit2 edit3 -- pitch spread_radius z1 z2 ... zN
     def synthesize_spread_1(self, *args):
         edits = []
         pitch = 0
         spread_radius = 0
         part = 0
+        z_buf_names = []
         for arg in args:
             if str(arg) == "--":
                 part += 1
@@ -356,24 +363,40 @@ class gansynth(pyext._class):
                 spread_radius = arg
                 part += 1
             else:
-                raise ValueError("invalid syntax, should be: edit1 edit2 edit3 -- pitch spread_radius")
+                z_buf_names.append(arg)
 
+        num_zs = len(z_buf_names)
+        if num_zs == 0:
+            raise ValueError("no z buffers specified")
+        if num_zs > self.batch_size:
+            raise ValueError(f"number of z buffers ({num_zs}) exceeds batch size {self.batch_size}")
+        
         while len(edits) < 3:
             edits.append(0)
 
         if len(edits) > 3:
             raise ValueError("more than 3 edits not supported")
 
-        spread = self._sphere_spread(spread_radius, self.batch_size, edits)
+        # generate points on a sphere around the edits position
+        
+        spread = self._sphere_spread(spread_radius, num_zs, edits)
 
-        args1 = []
-        for spread_edits in spread:
-            if args1:
-                args1.append("--")
-            args1.append(pitch)
-            args1.extend(spread_edits)
+        synthesize_args = []
+        for spread_edits, z_buf_name in zip(spread, z_buf_names):
+            self.z_mean_1(z_buf_name)
+            self.edit_z_1(z_buf_name, z_buf_name, *spread_edits)
+            synthesize_args.extend((z_buf_name, pitch))
+        
+        self.synthesize_1(*synthesize_args)
+        
+        # args1 = []
+        # for spread_edits in spread:
+        #     if args1:
+        #         args1.append("--")
+        #     args1.append(pitch)
+        #     args1.extend(spread_edits)
             
-        self.synthesize_noz_1(*args1)
+        # self.synthesize_noz_1(*args1)
         
     # expected format: synthesize_noz pitch1 [edit1_1 edit1_2 ...] -- pitch2 [edit2_1 edit2_2 ...] -- [...]
     def synthesize_noz_1(self, *args):
@@ -441,50 +464,8 @@ class gansynth(pyext._class):
         # time.sleep(0.4)
         # /DEBUG
 
-        t0 = time.time()
-        self._read_tag(protocol.OUT_TAG_AUDIO)
-        t1 = time.time()
-        self.last_synth_dur = t1 - t0
+        self._read_audio_msgs_into_slots(synth_slots)        
 
-        out_count_msg = self._read(protocol.count_struct.size)
-        out_count = protocol.from_count_msg(out_count_msg)
-        
-        assert out_count == in_count
-
-        if out_count == 0:
-            return
-
-        out_buf = pyext.Buffer(self.out_buf_name)
-        slot_len = self._out_slot_len()
-        synthesized_slots = []
-        for i, sound in enumerate(sounds):
-            audio_size_msg = self._read(protocol.audio_size_struct.size)
-            audio_size = protocol.from_audio_size_msg(audio_size_msg)
-
-            audio_msg = self._read(audio_size)
-            audio_note = protocol.from_audio_msg(audio_msg)
-            
-            slot_start = self._out_slot_start(sound.slot)
-            slot_stop = slot_start + slot_len
-            self.out_slots[sound.slot] = True
-            # print(f"sound {i} -> slot {sound.slot} ({slot_start}:{slot_stop})")
-            assert len(audio_note) == slot_len
-            out_buf[slot_start:slot_stop] = audio_note
-
-            # DEBUG
-            # out_buf[slot_start:slot_stop] = self.sines[sound.slot]
-            # self.sine_i = (self.sine_i + 1) % len(self.sines)
-            # /DEBUG
-            
-            synthesized_slots.append(sound.slot)
-            
-        out_buf.dirty()
-
-        for i, slot in enumerate(synthesized_slots):
-            msg = ["granular", f"grain{i+1}", "slot", slot]
-            # print(f"out: {msg}")
-            self._outlet(1, *msg)
-        # print("----")
         self._outlet(1, "synthesized")
 
     def slot_unused_1(self, slot):
@@ -599,3 +580,51 @@ class gansynth(pyext._class):
             dst_buf.dirty()
             
             self._outlet(1, ["ok", "edit_z"])
+
+    def _read_audio_msgs_into_slots(self, slots):
+        # FIXME: a bit questionable to measure time from here. assumes we always run after sending the synthesize msg
+        t0 = time.time()
+        self._read_tag(protocol.OUT_TAG_AUDIO)
+        t1 = time.time()
+        self.last_synth_dur = t1 - t0
+
+        out_count_msg = self._read(protocol.count_struct.size)
+        out_count = protocol.from_count_msg(out_count_msg)
+        
+        assert out_count == len(slots)
+
+        if out_count == 0:
+            return []
+
+        out_buf = pyext.Buffer(self.out_buf_name)
+        slot_len = self._out_slot_len()
+        synthesized_slots = []
+        for i, slot in enumerate(slots):
+            audio_size_msg = self._read(protocol.audio_size_struct.size)
+            audio_size = protocol.from_audio_size_msg(audio_size_msg)
+
+            audio_msg = self._read(audio_size)
+            audio_note = protocol.from_audio_msg(audio_msg)
+            
+            slot_start = self._out_slot_start(slot)
+            slot_stop = slot_start + slot_len
+            self.out_slots[slot] = True
+            # print(f"sound {i} -> slot {slot} ({slot_start}:{slot_stop})")
+            assert len(audio_note) == slot_len
+            out_buf[slot_start:slot_stop] = audio_note
+
+            # DEBUG
+            # out_buf[slot_start:slot_stop] = self.sines[sound.slot]
+            # self.sine_i = (self.sine_i + 1) % len(self.sines)
+            # /DEBUG
+            
+            synthesized_slots.append(slot)
+            
+        out_buf.dirty()
+
+        for i, slot in enumerate(synthesized_slots):
+            msg = ["granular", f"grain{i+1}", "slot", slot]
+            # print(f"out: {msg}")
+            self._outlet(1, *msg)
+
+        return synthesized_slots
